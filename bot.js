@@ -1,7 +1,8 @@
-var tmi = require('tmi.js');
-var XMLHttpRequest = require('xhr2');
+const tmi = require('tmi.js');
+const XMLHttpRequest = require('xhr2');
+const price = require('crypto-price')
+const CoinGecko = require('coingecko-api');
 
-const userMap = {};
 
 // Define configuration options
 const opts = {
@@ -18,6 +19,7 @@ const opts = {
 const client = new tmi.client(opts);
 
 var channel;
+const userMap = {};
 
 // Register our event handlers (defined below)
 client.on('message', onMessageHandler);
@@ -25,6 +27,8 @@ client.on('connected', onConnectedHandler);
 
 // Connect to Twitch:
 client.connect();
+
+const geckoClient = new CoinGecko();
 
 //Need to connect to client before running this, not sure how to hook the client connection to executing this
 //So just calling stuff at end of onConnectedHandler
@@ -40,7 +44,7 @@ function onConnectedHandler (addr, port) {
 }
 
 // Called every time a message comes in
-function onMessageHandler (target, context, msg, self) {
+async function onMessageHandler (target, context, msg, self) {
   if (self) { return; } // Ignore messages from the bot
 
   if (channel == null) {
@@ -54,29 +58,49 @@ function onMessageHandler (target, context, msg, self) {
   }
   
   line = line.substring(1);
+  line = line.toLowerCase();
   const arr = line.split(' ');
   const cmd = arr[0];
 
-  // If the command is known, let's execute it
+  // ========================
+//            COMMANDS
+  // ========================
+
   if (cmd === 'dice') {
     const num = rollDice(cmd);
     client.say(target, `You rolled a ${num}.`);
     console.log(`* Executed ${cmd} command`);
   } 
   else if (cmd == 'buy')  {
-    print('buy cmd');
     buy(arr[1], arr[2])
   }
   else if (cmd == 'sell') {
-    print('sell cmd');
     sell(arr[1], arr[2])
   }
   else if (cmd == 'pts' || cmd == 'points') {
     var user = context.username
-    print(context)
+    // This looks better, but not sure how to keep it consistent for the 'give' command... too lazy to add user lookup to get the display name
+    var displayName = context['display-name'];
     var points = getUserBalance(user)
-    print(points)
-    say(`${context['display-name']} has ${points} points`)
+    say(`${user} has ${points} points`)
+  }
+  else if (cmd == 'give') {
+    var user = arr[1]
+    var amount = arr[2]
+    if (give(user, amount)) {
+      say(`Giving ${arr[1]} ${arr[2]} points`)
+    } else {
+      say(`User ${user} not found`)
+    }
+  }
+  else if (cmd == 'price') {
+    var coin = arr[1].toUpperCase()
+    var price = await getPrice(coin)
+    print(price)
+    if (price != -1)
+      say(`Price of ${coin}: ${price}`)
+    else
+      say(`Unable to fetch price for ${coin}`)
   }
   else {
     console.log(`* Unknown command ${cmd}`);
@@ -90,7 +114,6 @@ function rollDice () {
 }
 
 function buy(ticker, amount) {
-  print("This worked?")
   say(`Buying ${amount} of ${ticker}`);
 }
 
@@ -108,22 +131,67 @@ function print(string) {
   console.log(string)
 }
 
+// CoinGecko prices (why are the ids not the ticker symbol?) (oh, they support so many coins there are tons of duplicate symbols)
+/*
+let data = await geckoClient.exchanges.fetchTickers('bitfinex', {
+    coin_ids: ['bitcoin', 'ethereum', 'ripple', 'litecoin', 'stellar']
+  });
+  var _coinList = {};
+  var _datacc = data.data.tickers.filter(t => t.target == 'USD');
+  [
+    'BTC',
+    'ETH',
+    'XRP',
+    'LTC',
+    'XLM'
+  ].forEach((i) => {
+    var _temp = _datacc.filter(t => t.base == i);
+    var _res = _temp.length == 0 ? [] : _temp[0];
+    _coinList[i] = _res.last;
+  })
+  console.log(_coinList);
+*/
+
+// Uses cryptonator price API... which is TERRIBLE... DO NOT USE!!!!!!!!!
+// THE PRICES ARE ALL WRONG!!!!
+function getPrice(coin) {
+  return new Promise(function (resolve, reject) {
+    price.getCryptoPrice('USD', coin).then(obj => {
+      console.log(obj)
+      resolve(obj.price)
+    }).catch(e => {
+      console.log(e);
+      resolve(-1)
+    })
+  });
+}
+
+
+function give(user, amount) {
+  print(userMap)
+  print(user)
+  if (user in userMap) {
+    balance = userMap[user]
+    balance += parseFloat(amount)
+    userMap[user] = balance
+    return true
+  }
+  return false
+}
 
 async function rewardAll(amount) {
   var users = await getChatters();
   // I will NOT remember this for looping over values...
   for (var it = users.values(), user = null; user=it.next().value;) {
-    print(user)
     var balance = 0;
     if (user in userMap) {
-      print('user has it')
       balance = userMap[user]
-      print(`current user balance ${balance}`)
     }
-    balance += amount
+    balance += parseFloat(amount)
     userMap[user] = balance
   }
-  say(`Giving all chatters ${amount} points`)
+  //say(`Giving all chatters ${amount} points`)
+  print(`Giving all ${amount} points`)
 }
 
 function getUserBalance(user) {
