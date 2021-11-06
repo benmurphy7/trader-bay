@@ -1,10 +1,37 @@
 const tmi = require('tmi.js');
 const XMLHttpRequest = require('xhr2');
-const price = require('crypto-price')
 const CoinGecko = require('coingecko-api');
+//const {CoinbasePro} = require('coinbase-pro-node');
+const CoinbasePro = require('coinbase-pro');
+const publicClient = new CoinbasePro.PublicClient();
+
+//publicClient.getProducts(coinbaseCallback)
+
+//publicClient.getProducts(coinbaseCallback);
+
+// Old coinbase-pro-node code
+/*
+const auth = {
+  apiKey: '55fac4010940668c4275a829b22f3697',
+  apiSecret: 'NIhtS3PSWgTgE7kLDuM5fBzxmLuEiL+ykBeIes/IussaSluNWX7omoDC9Wd2o3i6PX0JST4dU4abbJAImJdDuA==',
+  passphrase: 'eltoumi',
+  // The Sandbox is for testing only and offers a subset of the products/assets:
+  // https://docs.pro.coinbase.com/#sandbox
+  useSandbox: true,
+};
 
 
-// Define configuration options
+const coinbaseProClient = new CoinbasePro(auth);
+
+coinbaseProClient.rest.account.listAccounts().then(accounts => {
+  const message = `You can trade "${accounts.length}" different pairs.`;
+  console.log(message);
+});
+*/
+
+
+
+// Define configuration options for Twitch Bot
 const opts = {
   identity: {
     username: 'traderbaybot',
@@ -39,8 +66,8 @@ function onConnectedHandler (addr, port) {
   console.log(`* Connected to ${addr}:${port}`);
 
   rewardAll(100)
-  setInterval(function(){
-    rewardAll(100)}, 10000)
+//  setInterval(function(){
+//    rewardAll(100)}, 10000)
 }
 
 // Called every time a message comes in
@@ -94,7 +121,7 @@ async function onMessageHandler (target, context, msg, self) {
     }
   }
   else if (cmd == 'price') {
-    var coin = arr[1].toUpperCase()
+    var coin = arr[1];
     var price = await getPrice(coin)
     print(price)
     if (price != -1)
@@ -154,7 +181,7 @@ let data = await geckoClient.exchanges.fetchTickers('bitfinex', {
 
 // Uses cryptonator price API... which is TERRIBLE... DO NOT USE!!!!!!!!!
 // THE PRICES ARE ALL WRONG!!!!
-function getPrice(coin) {
+function getCryptonatorPrice(coin) {
   return new Promise(function (resolve, reject) {
     price.getCryptoPrice('USD', coin).then(obj => {
       console.log(obj)
@@ -166,6 +193,20 @@ function getPrice(coin) {
   });
 }
 
+async function getPrice(coin) {
+  return new Promise(function (resolve, reject) {
+    const coinbaseCallback = (error, response, data) => {
+      if (error) {
+        print(`coinbase callback error: ${error}`)
+        reject(error)
+      } else {
+        resolve(data.price)
+      }
+    }
+    var symbol = coin.toUpperCase() + '-USD';
+    publicClient.getProductTicker(symbol, coinbaseCallback)
+  });
+}
 
 function give(user, amount) {
   print(userMap)
