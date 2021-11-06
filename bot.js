@@ -1,35 +1,7 @@
 const tmi = require('tmi.js');
 const XMLHttpRequest = require('xhr2');
-const CoinGecko = require('coingecko-api');
-//const {CoinbasePro} = require('coinbase-pro-node');
 const CoinbasePro = require('coinbase-pro');
 const publicClient = new CoinbasePro.PublicClient();
-
-//publicClient.getProducts(coinbaseCallback)
-
-//publicClient.getProducts(coinbaseCallback);
-
-// Old coinbase-pro-node code
-/*
-const auth = {
-  apiKey: '55fac4010940668c4275a829b22f3697',
-  apiSecret: 'NIhtS3PSWgTgE7kLDuM5fBzxmLuEiL+ykBeIes/IussaSluNWX7omoDC9Wd2o3i6PX0JST4dU4abbJAImJdDuA==',
-  passphrase: 'eltoumi',
-  // The Sandbox is for testing only and offers a subset of the products/assets:
-  // https://docs.pro.coinbase.com/#sandbox
-  useSandbox: true,
-};
-
-
-const coinbaseProClient = new CoinbasePro(auth);
-
-coinbaseProClient.rest.account.listAccounts().then(accounts => {
-  const message = `You can trade "${accounts.length}" different pairs.`;
-  console.log(message);
-});
-*/
-
-
 
 // Define configuration options for Twitch Bot
 const opts = {
@@ -55,15 +27,12 @@ client.on('connected', onConnectedHandler);
 // Connect to Twitch:
 client.connect();
 
-const geckoClient = new CoinGecko();
-
-//Need to connect to client before running this, not sure how to hook the client connection to executing this
-//So just calling stuff at end of onConnectedHandler
-
-
 // Called every time the bot connects to Twitch chat
 function onConnectedHandler (addr, port) {
   console.log(`* Connected to ${addr}:${port}`);
+
+  //Need to connect to client before running this, not sure how to hook the client connection to executing this
+  //So just calling stuff at end of onConnectedHandler
 
   rewardAll(100)
 //  setInterval(function(){
@@ -89,11 +58,12 @@ async function onMessageHandler (target, context, msg, self) {
   const arr = line.split(' ');
   const cmd = arr[0];
 
-  // ========================
-//            COMMANDS
-  // ========================
 
-  if (cmd === 'dice') {
+// ====================================
+//              COMMANDS
+// ====================================
+  
+if (cmd === 'dice') {
     const num = rollDice(cmd);
     client.say(target, `You rolled a ${num}.`);
     console.log(`* Executed ${cmd} command`);
@@ -134,9 +104,13 @@ async function onMessageHandler (target, context, msg, self) {
       say(`Unable to fetch price for ${coin}`)
   }
 
+  else if (cmd == 'prices') {
+    say(('Get all prices here: https://pro.coinbase.com/trade'))
+  }
+
   else if (cmd == 'coins') {
     var coinSet = await getCoins()
-    var coins = Array.from(coinSet);
+    var coins = Array.from(coinSet).sort();
 
     if (coins == -1)
       say(`Unable to fetch supported coins`)
@@ -147,13 +121,9 @@ async function onMessageHandler (target, context, msg, self) {
     var chunkPos = 0;
       for (let i = 1; i <= chunkCount; i++) {
         var msg = `(${i}/${chunkCount}) ${arrayString(coins.slice(chunkPos, chunkPos + chunkSize))}`
-        if (i == chunkCount) {
-          msg += '  *All prices in USD*'
-        }
         say(msg);
         chunkPos += chunkSize;
       }
-
   }
 
   else {
@@ -162,7 +132,9 @@ async function onMessageHandler (target, context, msg, self) {
 }
 
 
-
+// ====================================
+//              FUNCTIONS
+// ====================================
 
 // Function called when the "dice" command is issued
 function rollDice () {
@@ -179,47 +151,12 @@ function sell(ticker, amount) {
 }
 
 function say(msg) {
-  print(`saying: ${msg}`)
+  print(`Saying: ${msg}`)
   client.say(channel, msg);
 }
 
 function print(string) {
   console.log(string)
-}
-
-// CoinGecko prices (why are the ids not the ticker symbol?) (oh, they support so many coins there are tons of duplicate symbols)
-/*
-let data = await geckoClient.exchanges.fetchTickers('bitfinex', {
-    coin_ids: ['bitcoin', 'ethereum', 'ripple', 'litecoin', 'stellar']
-  });
-  var _coinList = {};
-  var _datacc = data.data.tickers.filter(t => t.target == 'USD');
-  [
-    'BTC',
-    'ETH',
-    'XRP',
-    'LTC',
-    'XLM'
-  ].forEach((i) => {
-    var _temp = _datacc.filter(t => t.base == i);
-    var _res = _temp.length == 0 ? [] : _temp[0];
-    _coinList[i] = _res.last;
-  })
-  console.log(_coinList);
-*/
-
-// Uses cryptonator price API... which is TERRIBLE... DO NOT USE!!!!!!!!!
-// THE PRICES ARE ALL WRONG!!!!
-function getCryptonatorPrice(coin) {
-  return new Promise(function (resolve, reject) {
-    price.getCryptoPrice('USD', coin).then(obj => {
-      console.log(obj)
-      resolve(obj.price)
-    }).catch(e => {
-      console.log(e);
-      resolve(-1)
-    })
-  });
 }
 
 async function getCoins() {
