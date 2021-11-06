@@ -98,12 +98,14 @@ async function onMessageHandler (target, context, msg, self) {
     client.say(target, `You rolled a ${num}.`);
     console.log(`* Executed ${cmd} command`);
   } 
+
   else if (cmd == 'buy')  {
     buy(arr[1], arr[2])
   }
   else if (cmd == 'sell') {
     sell(arr[1], arr[2])
   }
+
   else if (cmd == 'pts' || cmd == 'points') {
     var user = context.username
     // This looks better, but not sure how to keep it consistent for the 'give' command... too lazy to add user lookup to get the display name
@@ -111,6 +113,7 @@ async function onMessageHandler (target, context, msg, self) {
     var points = getUserBalance(user)
     say(`${user} has ${points} points`)
   }
+
   else if (cmd == 'give') {
     var user = arr[1]
     var amount = arr[2]
@@ -120,19 +123,46 @@ async function onMessageHandler (target, context, msg, self) {
       say(`User ${user} not found`)
     }
   }
+
   else if (cmd == 'price') {
-    var coin = arr[1];
+    var coin = arr[1].toUpperCase();
     var price = await getPrice(coin)
-    print(price)
+
     if (price != -1)
-      say(`Price of ${coin}: ${price}`)
+      say(`Price of ${coin}: ${price} USD`)
     else
       say(`Unable to fetch price for ${coin}`)
   }
+
+  else if (cmd == 'coins') {
+    var coinSet = await getCoins()
+    var coins = Array.from(coinSet);
+
+    if (coins == -1)
+      say(`Unable to fetch supported coins`)
+    else
+    // break list into chunks
+    var chunkCount = 2;
+    var chunkSize = Math.ceil(coins.length / chunkCount);
+    var chunkPos = 0;
+      for (let i = 1; i <= chunkCount; i++) {
+        var msg = `(${i}/${chunkCount}) ${arrayString(coins.slice(chunkPos, chunkPos + chunkSize))}`
+        if (i == chunkCount) {
+          msg += '  *All prices in USD*'
+        }
+        say(msg);
+        chunkPos += chunkSize;
+      }
+
+  }
+
   else {
     console.log(`* Unknown command ${cmd}`);
   }
 }
+
+
+
 
 // Function called when the "dice" command is issued
 function rollDice () {
@@ -147,7 +177,6 @@ function buy(ticker, amount) {
 function sell(ticker, amount) {
   say(`Selling ${amount} of ${ticker}`);
 }
-
 
 function say(msg) {
   print(`saying: ${msg}`)
@@ -193,18 +222,39 @@ function getCryptonatorPrice(coin) {
   });
 }
 
-async function getPrice(coin) {
+async function getCoins() {
   return new Promise(function (resolve, reject) {
-    const coinbaseCallback = (error, response, data) => {
+    const callback = (error, response, data) => {
       if (error) {
         print(`coinbase callback error: ${error}`)
-        reject(error)
+        resolve(-1)
+      } else {
+        var coinSet = new Set();
+        for (i in data) {
+          var product = data[i].id
+          if (product.endsWith('-USD')) {
+            coinSet.add(product.split('-')[0])
+          }
+        }
+        resolve(coinSet)
+      }
+    }
+    publicClient.getProducts(callback);
+  });
+}
+
+async function getPrice(coin) {
+  return new Promise(function (resolve, reject) {
+    const callback = (error, response, data) => {
+      if (error) {
+        print(`coinbase callback error: ${error}`)
+        resolve(-1)
       } else {
         resolve(data.price)
       }
     }
-    var symbol = coin.toUpperCase() + '-USD';
-    publicClient.getProductTicker(symbol, coinbaseCallback)
+    var symbol = coin + '-USD';
+    publicClient.getProductTicker(symbol, callback)
   });
 }
 
@@ -282,4 +332,8 @@ function getAllValues(jsonObject) {
   }
 
   return valueSet;
+}
+
+function arrayString(array) {
+  return Array.from(array).join(', ')
 }
