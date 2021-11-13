@@ -20,6 +20,7 @@ const priceHistoryItem = 'price_history';
 const newUserBonus = 10000;
 const tax = 100;
 const maxHistory = 5;
+var checkingPrices = false;
 
 // Define configuration options for Twitch Bot
 const opts = {
@@ -291,61 +292,71 @@ async function onMessageHandler (target, context, msg, self) {
 // ====================================
 
 async function showMovers() {
-  var status = `Checking prices... this may take a few seconds.`
-  var processChanges = false;
-
-  var startTime = new Date().getTime() / 1000;
-
-  priceHistory = getPriceHistory();
-  if (priceHistory == null) {
-    status += ' No previous price data recorded.'
-  } else {
-    priceKeys = Object.keys(priceHistory);
-
-    if (priceKeys.length > 0) {
-      var lastChecked = priceHistory['time_checked']
-      var timeDiff = startTime - lastChecked;
-
-      status += ` Last checked ${roundTo(2, timeDiff)} seconds ago.`
-      processChanges = true;
-    }
+  if (checkingPrices) {
+    say(`Price check already in progress.`);
+    return
   }
-  
-  say(status);
+  try {
+    checkingPrices = true;
+    var status = `Checking prices... this may take a few seconds.`
+    var processChanges = false;
 
-  var coins = await getCoins();
-  priceMap = await getPrices(coins).catch((e) => {return -1})
+    var startTime = new Date().getTime() / 1000;
 
-  var endTime = new Date().getTime() / 1000;
-  var timeDiff = endTime - startTime;
-  priceMap['time_checked'] = endTime;
-  status = '';
+    priceHistory = getPriceHistory();
+    if (priceHistory == null) {
+      status += ' No previous price data recorded.'
+    } else {
+      priceKeys = Object.keys(priceHistory);
 
-  if (processChanges) {
-    changeMap = {}
+      if (priceKeys.length > 0) {
+        var lastChecked = priceHistory['time_checked']
+        var timeDiff = startTime - lastChecked;
 
-    // Get map of percent changes
-    for (coin of coins) {
-      var lastPrice = priceHistory[coin];
-      var currentPrice = priceMap[coin];
-
-      if (!isNaN(lastPrice) && !isNaN(currentPrice)) {
-        var priceChange = currentPrice - lastPrice;
-        var percentChange = priceChange / lastPrice;
-        changeMap[coin] = percentChange;
+        status += ` Last checked ${roundTo(2, timeDiff)} seconds ago.`
+        processChanges = true;
       }
     }
+    
+    say(status);
 
-    // Sort by value
-    var sorted = Object.entries(changeMap).sort((a,b) => b[1]-a[1])
+    var coins = await getCoins();
+    priceMap = await getPrices(coins).catch((e) => {return -1})
 
-    // Print top 5 - 10
-    status += ` Top movers: ${printPairs(10, sorted)} `;
+    var endTime = new Date().getTime() / 1000;
+    var timeDiff = endTime - startTime;
+    priceMap['time_checked'] = endTime;
+    status = '';
+
+    if (processChanges) {
+      changeMap = {}
+
+      // Get map of percent changes
+      for (coin of coins) {
+        var lastPrice = priceHistory[coin];
+        var currentPrice = priceMap[coin];
+
+        if (!isNaN(lastPrice) && !isNaN(currentPrice)) {
+          var priceChange = currentPrice - lastPrice;
+          var percentChange = priceChange / lastPrice;
+          changeMap[coin] = percentChange;
+        }
+      }
+
+      // Sort by value
+      var sorted = Object.entries(changeMap).sort((a,b) => b[1]-a[1])
+
+      // Print top 5 - 10
+      status += ` Top movers: ${printPairs(10, sorted)} `;
+    }
+    status += `Price check completed in ${roundTo(2, timeDiff)} seconds.`;
+    say(status);
+
+    setPriceHistory(priceMap);
+  } catch {}
+  finally {
+    checkingPrices = false;
   }
-  status += `Price check completed in ${roundTo(2, timeDiff)} seconds.`;
-  say(status);
-
-  setPriceHistory(priceMap);
 }
 
 function helpMessage() {
