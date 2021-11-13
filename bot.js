@@ -1,12 +1,14 @@
 const tmi = require('tmi.js');
-
 const XMLHttpRequest = require('xhr2');
-
 const CoinbasePro = require('coinbase-pro');
+const localStorage = require('node-localstorage')
+const puppeteer = require('puppeteer-extra')
+const fs = require('fs').promises;
+const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
+
 const publicClient = new CoinbasePro.PublicClient();
 
 const storePath = './store'
-const localStorage = require('node-localstorage')
 const localStore = new localStorage.LocalStorage(storePath);
 //localStore.clear()
 //print(localStore)
@@ -14,6 +16,7 @@ const localStore = new localStorage.LocalStorage(storePath);
 const admins = ['traderbaybot', 'traderbay']
 
 const currency = 'pts';
+const priceHistoryItem = 'price_history';
 const newUserBonus = 10000;
 const tax = 100;
 const maxHistory = 5;
@@ -29,6 +32,8 @@ const opts = {
   ]
 };
 
+var page;
+
 // Create a client with our options
 const client = new tmi.client(opts);
 
@@ -43,7 +48,7 @@ client.on('connected', onConnectedHandler);
 client.connect();
 
 // Called every time the bot connects to Twitch chat
-function onConnectedHandler (addr, port) {
+async function onConnectedHandler (addr, port) {
   console.log(`* Connected to ${addr}:${port}`);
 
   //Need to connect to client before running this, not sure how to hook the client connection to execute this
@@ -52,7 +57,21 @@ function onConnectedHandler (addr, port) {
   //rewardAll(100)
   //rewardAll(100)
   //setInterval(function(){rewardAll(100)}, 10000)
-  //setInterval(function(){helpMessage()}, 120000)
+  setInterval(function(){showMovers()}, 200000)
+
+  puppeteer.use(AdblockerPlugin())
+  const browser = await puppeteer.launch({
+    headless: false,
+    args: ['--kiosk', '--window-size=1920,1080', '--window-position=1921,0', '--disable-infobars', '--disable-web-security', '--allow-running-insecure-content', '--user-data-dir=C:/Users/benmu/userdata'], //'--user-data-dir=C:/Users/benmu/AppData/Local/Google/Chrome/User Data'
+    ignoreDefaultArgs: ["--enable-automation"],
+  });
+    const url = 'https://www.tradingview.com/'
+    page = await browser.newPage();
+    await page.setViewport({ width: 1920, height: 1080});
+    //const cookiesString = await fs.readFile('./cookies.json');
+   // const cookies = JSON.parse(cookiesString);
+    //await page.setCookie(...cookies);
+    await page.goto(url);
 }
 
 // Called every time a message comes in
@@ -63,7 +82,7 @@ async function onMessageHandler (target, context, msg, self) {
     channel = target
   }
 
-  var user = context.username
+  var user = context['display-name']
 
   if (isNewUser(user)) {
     say(`Welcome @${user}!`)
@@ -71,13 +90,13 @@ async function onMessageHandler (target, context, msg, self) {
   }
 
   // Remove whitespace from chat message
-  var line = msg.trim();
-  if (line.charAt(0) != '!') {
+  var input = msg.trim();
+  if (input.charAt(0) != '!' && input.charAt(0) != '$' && input.charAt(0) != '&') {
     return;
   }
   
-  line = line.substring(1);
-  line = line.toLowerCase();
+  input = input.substring(1);
+  line = input.toLowerCase();
   const arr = line.split(' ');
   const cmd = arr[0];
 
@@ -87,7 +106,7 @@ async function onMessageHandler (target, context, msg, self) {
 // ====================================
 
   if (cmd == 'help' || cmd == 'commands' || cmd == "cmds") {
-    say(`!pts, !coins, !prices, !price <coin>, !buy <coin> <value>, !sell <coin> <value>, !prices, !wallet, !history, !net, !give <user> <value>`);
+    say(`!pts, !coins, !show <coin>, !price <coin>, !buy <coin> <value>, !sell <coin> <value>, !wallet, !history, !net, !give <user> <value>, !prices, !movers`);
   }
 
   if (cmd == 'buy')  {
@@ -110,16 +129,16 @@ async function onMessageHandler (target, context, msg, self) {
     sell(user, cv.coin, cv.value)
   }
 
-  else if (cmd == 'held' || cmd == 'hodl' || cmd == 'holding' || cmd == 'hold' || cmd == 'holds' || cmd == 'hld' || cmd == 'wallet') {
+  else if (cmd == 'held' || cmd == 'hodl' || cmd == 'holding' || cmd == 'hold' || cmd == 'holds' || cmd == 'hld' || cmd == 'wallet' || cmd == 'wlt' || cmd == 'wal') {
     if (arr.length == 1) {
       holdingSummary(user);
     } else {
       var coin = arr[1].toUpperCase();
-      hold(user, coin);
+      wallet(user, coin);
     }
   }
 
-  else if (cmd == 'history' || cmd == 'hist') {
+  else if (cmd == 'history' || cmd == 'hist' || cmd == 'hst' || cmd == 'his') {
     var coin = null;
     if (arr.length == 2) {
       coin = arr[1].toUpperCase();
@@ -140,8 +159,14 @@ async function onMessageHandler (target, context, msg, self) {
   }
 
   else if (cmd == 'give') {
-    var taker = arr[1]
-    var amount = arr[2]
+    const inArr = input.split(' ');
+    var taker = getDisplayName(inArr[1])
+    var amount = inArr[2]
+
+    if (isNaN(amount)) {
+      say(`@${user} amount ${amount} is invalid`); 
+      return
+    }
 
     // Admins can give any amount
     if(isAdmin(user)) {
@@ -154,11 +179,6 @@ async function onMessageHandler (target, context, msg, self) {
     }
 
     if (!valid(amount)) {
-      return
-    }
-    if (taker == user) {
-      grant(user, tax * -1);
-      say(`${user} tried to give themself ${amount} and got taxed for unrealized gains (-${tax} ${currency})`)
       return
     }
 
@@ -206,11 +226,14 @@ async function onMessageHandler (target, context, msg, self) {
       say(`@${user} Invalid set command arguments`);
     }
 
-    var taker = arr[1]
-    var balance = arr[2]
+    // Use the provided casing for username (mainly for setting non-existing users [bot])
+    const inArr = input.split(' ');
+    var taker = getDisplayName(inArr[1])
+    var balance = inArr[2]
 
     if (isNaN(balance)) {
-      say(`@${user} '${balance} is NaN'`);
+      say(`@${user} amount ${balance} is invalid`);
+      return
     }
 
     if (setBalance(taker, balance)) {
@@ -227,6 +250,32 @@ async function onMessageHandler (target, context, msg, self) {
     }
   }
 
+  else if (cmd == 'show' || cmd == 'shw' || cmd == 'chart') {
+    coin = arr[1].toUpperCase();
+    if (await validCoin(coin)) {
+      say(`Loading ${coin} chart...`)
+      const buttonSelector = '#header-toolbar-symbol-search';
+      await page.waitForSelector(buttonSelector)
+      page.click(buttonSelector)
+  
+      const searchSelector = 'input[type="text"]'
+      await page.waitForSelector(searchSelector)
+      page.focus(searchSelector)
+      setTimeout(async function(){
+        await page.keyboard.type(` ${coin}USD`);
+        await page.keyboard.press('\n');
+      }, 200);
+    }
+  }
+
+  else if (cmd == 'viewers') {
+    say(`Viewers: ${arrayString(Array.from(await getUsers()).sort())}`);
+  }
+
+  else if (cmd == 'movers' || cmd == 'moves' || cmd == 'mvs' || cmd == 'check') {
+    showMovers();
+  }
+
   else {
     console.log(`* Unknown command ${cmd}`);
   }
@@ -236,6 +285,64 @@ async function onMessageHandler (target, context, msg, self) {
 // ====================================
 //              FUNCTIONS
 // ====================================
+
+async function showMovers() {
+  var status = `Checking prices... this may take a few seconds.`
+  var processChanges = false;
+
+  var startTime = new Date().getTime() / 1000;
+
+  priceHistory = getPriceHistory();
+  if (priceHistory == null) {
+    status += ' No previous price data recorded.'
+  } else {
+    priceKeys = Object.keys(priceHistory);
+
+    if (priceKeys.length > 0) {
+      var lastChecked = priceHistory['time_checked']
+      var timeDiff = startTime - lastChecked;
+
+      status += ` Last checked ${roundTo(2, timeDiff)} seconds ago.`
+      processChanges = true;
+    }
+  }
+  
+  say(status);
+
+  var coins = await getCoins();
+  priceMap = await getPrices(coins);
+
+  var endTime = new Date().getTime() / 1000;
+  var timeDiff = endTime - startTime;
+  priceMap['time_checked'] = endTime;
+  status = '';
+
+  if (processChanges) {
+    changeMap = {}
+
+    // Get map of percent changes
+    for (coin of coins) {
+      var lastPrice = priceHistory[coin];
+      var currentPrice = priceMap[coin];
+
+      if (!isNaN(lastPrice) && !isNaN(currentPrice)) {
+        var priceChange = currentPrice - lastPrice;
+        var percentChange = priceChange / lastPrice;
+        changeMap[coin] = percentChange;
+      }
+    }
+
+    // Sort by value
+    var sorted = Object.entries(changeMap).sort((a,b) => b[1]-a[1])
+
+    // Print top 5 - 10
+    status += ` Top movers: ${printPairs(10, sorted)} `;
+  }
+  status += `Price check completed in ${roundTo(2, timeDiff)} seconds.`;
+  say(status);
+
+  setPriceHistory(priceMap);
+}
 
 function helpMessage() {
   say(`Type '!commands' for a list of options`);
@@ -383,7 +490,7 @@ function heldCoins(user) {
   return coinArray.sort();
 }
 
-async function hold(user, coin) {
+async function wallet(user, coin) {
   var trader = getTrader(user);
   if (contains(Object.keys(trader.holdingMap), coin)) {
     holding = trader.holdingMap[coin]
@@ -396,7 +503,7 @@ async function hold(user, coin) {
   var price = await getPrice(coin);
   var value = price * amount;
   
-  say(`${user} holds ${amount} ${coin} worth ${value} ${currency}`)
+  say(`${user} holds ${amount} ${coin} worth ${roundTo(2, value)} ${currency}`)
 }
 
 function say(msg) {
@@ -406,7 +513,7 @@ function say(msg) {
 
 // Don't create new trader entries for non-existent users
 function grant(user, amount) {
-  var trader = getTrader(user);
+  var trader = getTrader(user, false);
   if (trader != null) {
     trader.points += parseFloat(amount);
     if (trader.points < 0) {
@@ -419,24 +526,31 @@ function grant(user, amount) {
 }
 
 function give(giver, amount, taker) {
-  var takingTrader = getTrader(taker);
+  var takingTrader = getTrader(taker, false);
     if (takingTrader == null) {
-      say(`Cannot find ${taker}`)
+      say(`@${getDisplayName(giver)} Cannot find '${taker}'`)
       return
     }
 
   var givingTrader = getTrader(giver);
   var balance = givingTrader.points;
   if (balance < amount) {
-    say(`${giver} is unable to give ${amount}. Balance: ${balance}`)
+    say(`${getDisplayName(giver)} is unable to give ${amount}. Balance: ${balance}`)
     return
   }
+
+  if (taker.toLowerCase() == user.toLowerCase()) {
+    grant(user, tax * -1);
+    say(`${user} tried to give themself ${amount} and got taxed for unrealized gains (-${tax} ${currency})`)
+    return
+  }
+
   givingTrader.points -= parseInt(amount);
   setTrader(givingTrader);
   takingTrader.points += parseFloat(amount);
   setTrader(takingTrader);
 
-  say(`${giver} gave ${taker} ${amount}`);
+  say(`${getDisplayName(giver)} gave ${getDisplayName(taker)} ${amount}`);
 }
 
 function topoff(user) {
@@ -468,7 +582,8 @@ async function rewardAll(amount) {
 // ====================================
 
 function Trader(name) {
-  this.name = name
+  this.name = name.toLowerCase();
+  this.displayName = name;
   this.points = 0;
   this.holdingMap = new Map();
   this.orderMap = new Map();
@@ -490,12 +605,11 @@ async function getUsers() {
   var data = await makeRequest("GET", 'https://tmi.twitch.tv/group/user/traderbay/chatters');
   var jsonResponse = JSON.parse(data);
   var chatters = getAllValues(jsonResponse["chatters"])
-  print(`chatters: ${Array.from(chatters).sort()}`)
   return chatters
 }
 
 function setBalance(user, balance) {
-  var trader = getTrader(user)
+  var trader = getTrader(user, false)
   if (trader != null) {
     trader.points = parseFloat(balance);
     setTrader(trader);
@@ -513,35 +627,48 @@ function getBalance(user) {
   return balance
 }
 
-function setTrader(trader) {
-  localStore.setItem(trader.name, JSON.stringify(trader))
+function getDisplayName(user) {
+  trader = getTrader(user, false);
+  if (trader != null) {
+    var displayName = trader.displayName;
+    if (displayName != null) {
+      return displayName;
+    }
+  }
+  return user;
 }
 
-function isNewUser(user) {
+function isNewUser(userName) {
   var trader = null
   try {
-    trader = localStore.getItem(user);
+    trader = localStore.getItem(userName.toLowerCase());
   } catch {
     //NOP
   }
   if (trader == null) {
-    addNewUser(user);
+    addNewUser(userName);
     return true
   }
   return false;
 }
 
-function getTrader(user) {
+function setTrader(trader) {
+  localStore.setItem(trader.name, JSON.stringify(trader))
+}
+
+function getTrader(userName, addNew) {
   var trader = null;
   try {
-    trader = localStore.getItem(user);
+    trader = localStore.getItem(userName.toLowerCase());
   } catch {
     //NOP
   }
   if (trader != null) {
     trader = JSON.parse(trader)
+  } else if (addNew != false) {
+    return addNewUser(userName);
   } else {
-    return addNewUser(user);
+    return null
   }
 
   // Set default values if missing from JSON (updated object)
@@ -551,8 +678,28 @@ function getTrader(user) {
   if (trader.orderMap == null) {
     trader.orderMap = new Map();
   }
+  if (addNew == null && trader.displayName != userName) {
+    trader.displayName = userName;
+  }
 
   return trader;
+}
+
+function setPriceHistory(priceHistory) {
+  localStore.setItem(priceHistoryItem, JSON.stringify(priceHistory))
+}
+
+function getPriceHistory() {
+  var priceHistory = null;
+  try {
+    priceHistory = localStore.getItem(priceHistoryItem);
+  } catch {
+    //NOP
+  }
+  if (priceHistory != null) {
+    priceHistory = JSON.parse(priceHistory)
+  } 
+  return priceHistory;
 }
 
 async function getCoins() {
@@ -574,6 +721,16 @@ async function getCoins() {
     }
     publicClient.getProducts(callback);
   });
+}
+
+async function validCoin(coin) {
+  var coins = await getCoins();
+  if(coins.has(coin.toUpperCase())) {
+    return true;
+  } else {
+    say(`'${coin}' is not a valid coin.`)
+    return false;
+  }
 }
 
 async function getPrice(coin) {
@@ -620,6 +777,16 @@ function getOrderHistory(user, coin) {
   return historyString(history, coin);
 }
 
+async function getPrices(coins) {
+  var priceMap = {}
+
+  for (coin of coins) {
+    priceMap[coin] = await getPrice(coin);
+  }
+
+  return priceMap;
+}
+
 // ====================================
 //              UTIL
 // ====================================
@@ -649,8 +816,8 @@ function makeRequest(method, url) {
   });
 }
 
-function addNewUser(user) {
-  trader = new Trader(user)
+function addNewUser(userName) {
+  trader = new Trader(userName)
   trader.points = parseFloat(newUserBonus);
   setTrader(trader);
   return trader;
@@ -672,7 +839,7 @@ function arrayString(array) {
 }
 
 function isAdmin(user) {
-  return admins.indexOf(String(user)) > -1;
+  return admins.indexOf(String(user.toLowerCase())) > -1;
 }
 
 function contains(array, item) {
@@ -680,6 +847,10 @@ function contains(array, item) {
 }
 
 function valid(value) {
+  if (value == null) {
+    say('Value is undefined or missing.')
+    return false
+  }
   if (value < 0) {
     say(`Value ${value} is invalid.`)
     return false
@@ -689,25 +860,28 @@ function valid(value) {
 
 function assignCoinValuePair(item1, item2) {
   var coin, value;
-  item1 = item1.toUpperCase();
-  item2 = item2.toUpperCase();
+ 
+  if (item1 != null && item2 != null) {
+    item1 = item1.toUpperCase();
+    item2 = item2.toUpperCase();
 
-  if (item1 == 'ALL' || item2 == 'ALL') {
-    if (item1 == 'ALL') {
-      value = item1;
-      coin = item2;
-    } else {
-      coin = item1;
-      value = item2;
+    if (item1 == 'ALL' || item2 == 'ALL') {
+      if (item1 == 'ALL') {
+        value = item1;
+        coin = item2;
+      } else {
+        coin = item1;
+        value = item2;
+      }
     }
-  }
-  else if (isNaN(item1)) {
-    coin = item1
-    value = item2
-  } 
-  else {
-    value = item1
-    coin = item2
+    else if (isNaN(item1)) {
+      coin = item1
+      value = item2
+    } 
+    else {
+      value = item1
+      coin = item2
+    }
   }
   
   return {
@@ -719,7 +893,7 @@ function assignCoinValuePair(item1, item2) {
 function historyString(history, coin) {
   var string = '';
   history.forEach(function (order, i) {
-    string += `(${i+1}) - ${order.type} ${order.coin} @ ${order.price} x ${order.amount} (${roundTo(2, order.price * order.amount)} ${currency}) `
+    string += `(${i+1}) - ${order.type} ${order.coin} @ ${order.price} x ${order.amount} (${roundTo(2, order.price * order.amount)} ${currency}). `
 });
   if (string == '') {
     var coinName = ''
@@ -729,6 +903,21 @@ function historyString(history, coin) {
     string = `has no recorded ${coinName} trades`
   }
 return string;
+}
+
+function printPairs(max, list) {
+  var n = Math.min(max, list.length);
+  var toPrint = list.slice(0, n);
+  var string = '';
+  toPrint.forEach(function (pair, i) {
+    string += `(${i+1}) - ${pair[0]}: ${percentString(pair[1])}. `
+});
+ return string;
+}
+
+function percentString(percent) {
+  var percentString = `${roundTo(4, percent * 100)}%`;
+  return percentString
 }
 
 function addToHistory(order, history) {
