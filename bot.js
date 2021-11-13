@@ -34,6 +34,24 @@ const opts = {
 
 var page;
 
+launchChrome();
+
+async function launchChrome() {
+  puppeteer.use(AdblockerPlugin())
+  const browser = await puppeteer.launch({
+    headless: false,
+    args: ['--kiosk', '--window-size=1920,1080', '--window-position=1921,0', '--disable-infobars', '--disable-web-security', '--allow-running-insecure-content', '--user-data-dir=C:/Users/benmu/userdata'], //'--user-data-dir=C:/Users/benmu/AppData/Local/Google/Chrome/User Data'
+    ignoreDefaultArgs: ["--enable-automation"],
+  });
+    const url = 'https://www.tradingview.com/'
+    page = await browser.newPage();
+    await page.setViewport({ width: 1920, height: 1080});
+    //const cookiesString = await fs.readFile('./cookies.json');
+   // const cookies = JSON.parse(cookiesString);
+    //await page.setCookie(...cookies);
+    await page.goto(url);
+}
+
 // Create a client with our options
 const client = new tmi.client(opts);
 
@@ -58,20 +76,6 @@ async function onConnectedHandler (addr, port) {
   //rewardAll(100)
   //setInterval(function(){rewardAll(100)}, 10000)
   setInterval(function(){showMovers()}, 200000)
-
-  puppeteer.use(AdblockerPlugin())
-  const browser = await puppeteer.launch({
-    headless: false,
-    args: ['--kiosk', '--window-size=1920,1080', '--window-position=1921,0', '--disable-infobars', '--disable-web-security', '--allow-running-insecure-content', '--user-data-dir=C:/Users/benmu/userdata'], //'--user-data-dir=C:/Users/benmu/AppData/Local/Google/Chrome/User Data'
-    ignoreDefaultArgs: ["--enable-automation"],
-  });
-    const url = 'https://www.tradingview.com/'
-    page = await browser.newPage();
-    await page.setViewport({ width: 1920, height: 1080});
-    //const cookiesString = await fs.readFile('./cookies.json');
-   // const cookies = JSON.parse(cookiesString);
-    //await page.setCookie(...cookies);
-    await page.goto(url);
 }
 
 // Called every time a message comes in
@@ -310,7 +314,7 @@ async function showMovers() {
   say(status);
 
   var coins = await getCoins();
-  priceMap = await getPrices(coins);
+  priceMap = await getPrices(coins).catch((e) => {return -1})
 
   var endTime = new Date().getTime() / 1000;
   var timeDiff = endTime - startTime;
@@ -446,7 +450,7 @@ async function holdingValue(user) {
   // If a group of coins need prices fetched, how to async this and collect at end?
   for(const coin of coins) {
     var holding = trader.holdingMap[coin]
-    var price = await getPrice(coin);
+    var price = await getPrice(coin).catch((e) => {return -1})
     var value = price * holding['amount']
     totalValue += value;
   }
@@ -471,7 +475,7 @@ async function holdingSummary(user) {
 
   for (const coin of coins) {
     var holding = trader.holdingMap[coin]
-    var price = await getPrice(coin);
+    var price = await getPrice(coin).catch((e) => {return -1})
     var value = price * holding['amount']
     value = roundTo(2, value);
     holdingArray.push(`${coin} (~${value} ${currency})`)
@@ -500,7 +504,7 @@ async function wallet(user, coin) {
   }
 
   var amount = holding['amount'];
-  var price = await getPrice(coin);
+  var price = await getPrice(coin).catch((e) => {return -1})
   var value = price * amount;
   
   say(`${user} holds ${amount} ${coin} worth ${roundTo(2, value)} ${currency}`)
@@ -733,12 +737,14 @@ async function validCoin(coin) {
   }
 }
 
-async function getPrice(coin) {
+async function getPrice(coin, muteError) {
   return new Promise(function (resolve, reject) {
     const callback = (error, response, data) => {
       if (error) {
-        say(`Unable to get price data for '${coin}'`)
-        reject(-1)
+        if (muteError == null) {
+          say(`Unable to get price data for '${coin}'`)
+        }
+        resolve(-1)
       } else {
         resolve(data.price)
       }
@@ -781,7 +787,7 @@ async function getPrices(coins) {
   var priceMap = {}
 
   for (coin of coins) {
-    priceMap[coin] = await getPrice(coin);
+    priceMap[coin] = await getPrice(coin, true).catch((e) => {return -1})
   }
 
   return priceMap;
