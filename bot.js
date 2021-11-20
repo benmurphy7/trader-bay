@@ -391,6 +391,8 @@ async function listMovers(group) {
     
     say(status);
 
+    var groupTitle = '';
+
     var coins = await getCoins();
     priceMap = await getPrices(coins).catch((e) => {return -1})
 
@@ -420,7 +422,9 @@ async function listMovers(group) {
       var sorted = Object.entries(changeMap).sort((a,b) => b[1]-a[1])
       var pairs = [];
       if (group == null) {
-        pairs = await sliceArray(10, sorted);
+        const amount = 10;
+        pairs = await sliceArray(amount, sorted);
+        groupTitle = `TOP ${amount}`;
       }
       else {
         var rates = [];
@@ -434,13 +438,16 @@ async function listMovers(group) {
         clusters.sort((a, b) => (a.mean < b.mean) ? 1 : -1)
 
         var groupPairs = []
-        if (group == 'MID') {
+        if (group == 'MID' || group == '2') {
+          groupTitle = 'MID';
           groupPairs = clusters[1].data;
         }
-        else if (group == 'BOT') {
+        else if(group == 'BOT' || group == '3') {
+          groupTitle = 'BOT';
           groupPairs = clusters[2].data;
         }
         else {
+          groupTitle = 'TOP';
           groupPairs = clusters[0].data;
         }
   
@@ -453,7 +460,7 @@ async function listMovers(group) {
         }
       }
 
-      status += ` Top movers: ${printPairs(pairs)} `;
+      status += ` [${groupTitle}] Movers: ${printPairs(pairs)} `;
     }
     status += `Price check completed in ${roundTo(2, timeDiff)} seconds.`;
     say(status);
@@ -969,6 +976,9 @@ async function showCoin(coin) {
       page.focus(searchSelector)
       setTimeout(async function(){
         await page.keyboard.type(` ${coin}USD`);
+        await sleep(50);
+        await page.keyboard.press('ArrowDown');
+        await sleep(50);
         await page.keyboard.press('\n');
       }, 200);
 }
