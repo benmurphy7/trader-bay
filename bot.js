@@ -81,6 +81,7 @@ async function launchChrome() {
    // const cookies = JSON.parse(cookiesString);
     //await page.setCookie(...cookies);
     await page.goto(url);
+    selectInitialChart();
 }
 
 // Create a client with our options
@@ -369,10 +370,12 @@ async function listMovers(group) {
   }
   try {
     checkingPrices = true;
-    var status = `Checking prices... this may take a few seconds.`
+    var status = '';
     var processChanges = false;
 
     var startTime = new Date().getTime() / 1000;
+
+    var timeDiff = 0;
 
     priceHistory = getPriceHistory();
     if (priceHistory == null) {
@@ -382,14 +385,16 @@ async function listMovers(group) {
 
       if (priceKeys.length > 0) {
         var lastChecked = priceHistory['time_checked']
-        var timeDiff = startTime - lastChecked;
+        timeDiff = startTime - lastChecked;
 
-        status += ` Last checked ${roundTo(2, timeDiff)} seconds ago.`
+        //status += ` Last checked ${roundTo(2, timeDiff)} seconds ago.`
         processChanges = true;
       }
     }
-    
-    say(status);
+
+    if (status != '') {
+      say(status);
+    }
 
     var groupTitle = '';
 
@@ -397,7 +402,7 @@ async function listMovers(group) {
     priceMap = await getPrices(coins).catch((e) => {return -1})
 
     var endTime = new Date().getTime() / 1000;
-    var timeDiff = endTime - startTime;
+    var completeTime = endTime - startTime;
     priceMap['time_checked'] = endTime;
     status = '';
 
@@ -460,9 +465,9 @@ async function listMovers(group) {
         }
       }
 
-      status += ` [${groupTitle}] Movers: ${printPairs(pairs)} `;
+      status += ` [${groupTitle}] Movers (Last ${roundTo(0, timeDiff)} seconds): ${printPairs(pairs)} `;
     }
-    status += `Price check completed in ${roundTo(2, timeDiff)} seconds.`;
+    //status += `Price check completed in ${roundTo(2, completeTime)} seconds.`;
     say(status);
 
     setPriceHistory(priceMap);
@@ -969,18 +974,32 @@ async function showCoin(coin) {
   say(`Loading ${coin} chart...`)
       const buttonSelector = '#header-toolbar-symbol-search';
       await page.waitForSelector(buttonSelector)
-      page.click(buttonSelector)
+      await page.click(buttonSelector)
   
       const searchSelector = 'input[type="text"]'
       await page.waitForSelector(searchSelector)
-      page.focus(searchSelector)
+      await page.focus(searchSelector)
       setTimeout(async function(){
         await page.keyboard.type(` ${coin}USD`);
-        await sleep(50);
+        await sleep(100);
         await page.keyboard.press('ArrowDown');
-        await sleep(50);
+        await sleep(100);
         await page.keyboard.press('\n');
       }, 200);
+}
+
+async function selectInitialChart() {
+  
+  const buttonSelector = 
+    '#tv-main-page-promo > div > div.contentContainer-n3cPtofU > div.content-n3cPtofU > div > button > span';
+  await page.waitForSelector(buttonSelector)
+  await page.click(buttonSelector)
+  setTimeout(async function(){
+    await sleep(100);
+    await page.keyboard.press('ArrowDown');
+    await sleep(100);
+    await page.keyboard.press('\n');
+  }, 200);
 }
 
 // ====================================
