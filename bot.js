@@ -5,8 +5,34 @@ const localStorage = require('node-localstorage')
 const puppeteer = require('puppeteer-extra')
 const fs = require('fs').promises;
 const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
+const kmeans = require('./1d_kmeans.js')
 
 const publicClient = new CoinbasePro.PublicClient();
+var websocket;
+
+setupWebSocket();
+
+async function setupWebSocket() {
+  fullCoins = await getFullCoinsArray();
+  websocket = new CoinbasePro.WebsocketClient(
+    fullCoins,
+    "wss://ws-feed.pro.coinbase.com",
+    {
+      key: '22b23cc248c11ed768085bd56d848ce8',
+      secret: 'z3oxxGnsXC69ymx7oP3zZzT0Cu5eSMHEJYl+UY5xgQK0suxzCTATqo0cEeGqK1pCZA/iH2MHpfIjIse0buK08A==',
+      passphrase: 'eltoumi',
+    },
+    {
+      channels: ['ticker']
+    }
+  );
+  // This data stream is insane
+  websocket.on('message', data => {
+    if (data.type == 'ticker') {
+      updatePrice(data);
+    }
+  });
+}
 
 const storePath = './store'
 const localStore = new localStorage.LocalStorage(storePath);
@@ -17,10 +43,14 @@ const admins = ['traderbaybot', 'traderbay']
 
 const currency = 'pts';
 const priceHistoryItem = 'price_history';
+const priceDataTimes = [0, 30, 60, 120, 180, 240, 300];
 const newUserBonus = 10000;
 const tax = 100;
 const maxHistory = 5;
 var checkingPrices = false;
+var currentCoin = null;
+
+var topMovers = []
 
 // Define configuration options for Twitch Bot
 const opts = {
@@ -76,7 +106,7 @@ async function onConnectedHandler (addr, port) {
   //rewardAll(100)
   //rewardAll(100)
   //setInterval(function(){rewardAll(100)}, 10000)
-  setInterval(function(){showMovers()}, 200000)
+  setInterval(function(){listMovers()}, 120000)
 }
 
 // Called every time a message comes in
@@ -256,20 +286,19 @@ async function onMessageHandler (target, context, msg, self) {
   }
 
   else if (cmd == 'show' || cmd == 'shw' || cmd == 'chart') {
+    if (arr.length < 2) {
+      return
+    }
+
     coin = arr[1].toUpperCase();
-    if (await validCoin(coin)) {
-      say(`Loading ${coin} chart...`)
-      const buttonSelector = '#header-toolbar-symbol-search';
-      await page.waitForSelector(buttonSelector)
-      page.click(buttonSelector)
-  
-      const searchSelector = 'input[type="text"]'
-      await page.waitForSelector(searchSelector)
-      page.focus(searchSelector)
-      setTimeout(async function(){
-        await page.keyboard.type(` ${coin}USD`);
-        await page.keyboard.press('\n');
-      }, 200);
+
+    if (coin == 'ALL') {
+      await showCoins(Array.from(await getCoins()).sort());
+    } else {
+      if (await validCoin(coin)) {
+        showCoin(coin);
+        currentCoin = coin;
+      }
     }
   }
 
@@ -278,7 +307,11 @@ async function onMessageHandler (target, context, msg, self) {
   }
 
   else if (cmd == 'movers' || cmd == 'moves' || cmd == 'mvs' || cmd == 'check') {
-    showMovers();
+    var group = null;
+    if (arr.length > 1) {
+      group = arr[1].toUpperCase();
+    }
+    listMovers(group);
   }
 
   else {
@@ -291,7 +324,45 @@ async function onMessageHandler (target, context, msg, self) {
 //              FUNCTIONS
 // ====================================
 
-async function showMovers() {
+function updatePrice(data) {
+  const product_id = data.product_id;
+  const currentTime = new Date().getTime() / 1000;
+
+  var priceDataString = JSON.stringify({
+    price: data.price,
+    time: currentTime
+  });
+
+  var priceDataMap =localStore.getItem(product_id);
+  if (priceDataMap == null) {
+    priceDataMap = {}
+  } else {
+    priceDataMap =  JSON.parse(priceDataMap);
+  }
+  for (var priceDataTime of priceDataTimes) {
+    var key = priceDataTime.toString();
+    var update = false;
+    var priceData = priceDataMap[key];
+    if (priceData != null) {
+      priceData = JSON.parse(priceData);
+      var lastUpdateTime = priceData.time;
+      var timeDiff = currentTime - lastUpdateTime;
+      if (timeDiff > priceDataTime) {
+        update = true;
+      }
+    } else {
+      update = true;
+    }
+
+    if(update) {
+      priceDataMap[key] = priceDataString;
+    }
+
+  }
+  localStore.setItem(product_id, JSON.stringify(priceDataMap));
+}
+
+async function listMovers(group) {
   if (checkingPrices) {
     say(`Price check already in progress.`);
     return
@@ -340,14 +411,49 @@ async function showMovers() {
           var priceChange = currentPrice - lastPrice;
           var percentChange = priceChange / lastPrice;
           changeMap[coin] = percentChange;
+        } else {
+          print('value is nan');
         }
       }
 
       // Sort by value
       var sorted = Object.entries(changeMap).sort((a,b) => b[1]-a[1])
+      var pairs = [];
+      if (group == null) {
+        pairs = await sliceArray(10, sorted);
+      }
+      else {
+        var rates = [];
 
-      // Print top 5 - 10
-      status += ` Top movers: ${printPairs(10, sorted)} `;
+        for (pair of sorted) {
+          rates.push(pair[1]);
+        }
+  
+        var clusters = kmeans.kmeans_1d(rates, 3);
+        // Sort clusters by their mean value (highest first)
+        clusters.sort((a, b) => (a.mean < b.mean) ? 1 : -1)
+
+        var groupPairs = []
+        if (group == 'MID') {
+          groupPairs = clusters[1].data;
+        }
+        else if (group == 'BOT') {
+          groupPairs = clusters[2].data;
+        }
+        else {
+          groupPairs = clusters[0].data;
+        }
+  
+        // In order to get the pairs clustered, need to search the clustered values.
+        // If multiple pairs share the same value, then they should be part of the same cluster, so exact pairing doesn't really matter
+        for (pair of sorted) {
+          if (groupPairs.indexOf(pair[1]) > -1) {
+            pairs.push(pair);
+          }
+        }
+      }
+
+      status += ` Top movers: ${printPairs(pairs)} `;
     }
     status += `Price check completed in ${roundTo(2, timeDiff)} seconds.`;
     say(status);
@@ -738,6 +844,14 @@ async function getCoins() {
   });
 }
 
+async function getFullCoinsArray() {
+  var coins = Array.from(await getCoins());
+  for (var i = 0; i < coins.length; i++) {
+    coins[i] = coins[i] += '-USD';
+  }
+  return coins;
+}
+
 async function validCoin(coin) {
   var coins = await getCoins();
   if(coins.has(coin.toUpperCase())) {
@@ -748,10 +862,33 @@ async function validCoin(coin) {
   }
 }
 
-async function getPrice(coin, muteError) {
+async function getPrice(coin) {
+  var poll = false;
+  var price;
+  const product_id = getProductId(coin);
+  var priceDataMap = localStore.getItem(product_id);
+  if (priceDataMap != null) {
+    priceDataMap = JSON.parse(priceDataMap);
+    if ('0' in priceDataMap) {
+      var priceData = JSON.parse(priceDataMap['0']);
+      price = priceData.price;
+    }
+  } else {
+    poll = true;
+  }
+
+  if (poll) {
+    return await getCoinPrice(coin).catch((e) => {return -1});
+  }
+
+  return price;
+}
+
+async function getCoinPrice(coin, muteError) {
   return new Promise(function (resolve, reject) {
     const callback = (error, response, data) => {
       if (error) {
+        //print(error)
         if (muteError == null) {
           say(`Unable to get price data for '${coin}'`)
         }
@@ -798,10 +935,42 @@ async function getPrices(coins) {
   var priceMap = {}
 
   for (coin of coins) {
-    priceMap[coin] = await getPrice(coin, true).catch((e) => {return -1})
+    priceMap[coin] = getPrice(coin, true).catch((e) => {return -1})
+  }
+
+  var promiseArray = Object.values(priceMap);
+
+  await Promise.all(promiseArray);
+  // Even though all promises are completed, their values are still wrapped..?
+  for (key of Object.keys(priceMap)) {
+    // Extract value from promise
+    priceMap[key] = await priceMap[key];
   }
 
   return priceMap;
+}
+
+async function showCoins(coins) {
+  for (coin of coins) {
+    showCoin(coin);
+    await sleep(1500)
+  }
+  return;
+}
+
+async function showCoin(coin) {
+  say(`Loading ${coin} chart...`)
+      const buttonSelector = '#header-toolbar-symbol-search';
+      await page.waitForSelector(buttonSelector)
+      page.click(buttonSelector)
+  
+      const searchSelector = 'input[type="text"]'
+      await page.waitForSelector(searchSelector)
+      page.focus(searchSelector)
+      setTimeout(async function(){
+        await page.keyboard.type(` ${coin}USD`);
+        await page.keyboard.press('\n');
+      }, 200);
 }
 
 // ====================================
@@ -875,6 +1044,10 @@ function valid(value) {
   return true;
 }
 
+function getProductId(coin) {
+  return coin.toUpperCase() + '-USD';
+}
+
 function assignCoinValuePair(item1, item2) {
   var coin, value;
  
@@ -922,11 +1095,14 @@ function historyString(history, coin) {
 return string;
 }
 
-function printPairs(max, list) {
+function sliceArray(max, list) {
   var n = Math.min(max, list.length);
-  var toPrint = list.slice(0, n);
+  return list.slice(0, n);
+}
+
+function printPairs(list) {
   var string = '';
-  toPrint.forEach(function (pair, i) {
+  list.forEach(function (pair, i) {
     string += `(${i+1}) - ${pair[0]}: ${percentString(pair[1])}. `
 });
  return string;
@@ -947,6 +1123,10 @@ function addToHistory(order, history) {
 
 function roundTo(places, num) {    
   return +(Math.round(num + `e+${places}`)  + `e-${places}`);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function print(string) {
