@@ -1,0 +1,27 @@
+{
+  "name": "trader-bay",
+  "version": "1.0.0",
+  "description": "",
+  "main": "bot.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benmurphy7/trader-bay.git"
+  },
+  "author": "Ben Murphy",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/benmurphy7/trader-bay/issues"
+  },
+  "homepage": "https://github.com/benmurphy7/trader-bay#readme",
+  "dependencies": {
+    "coinbase-pro": "^0.9.0",
+    "node-localstorage": "^2.2.1",
+    "puppeteer-extra": "^3.2.3",
+    "puppeteer-extra-plugin-adblocker": "^2.12.0",
+    "tmi.js": "^1.8.5",
+    "xhr2": "^0.2.1"
+  }
+}
