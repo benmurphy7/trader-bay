@@ -5,17 +5,18 @@ const localStorage = require('node-localstorage')
 const puppeteer = require('puppeteer-extra')
 const fs = require('fs').promises;
 const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
-const kmeans = require('./1d_kmeans.js')
+const kmeans = require('./1d_kmeans.js');
 
 const publicClient = new CoinbasePro.PublicClient();
 var websocket;
+var productIds;
 
 setupWebSocket();
 
 async function setupWebSocket() {
-  fullCoins = await getFullCoinsArray();
+  productIds = await getProductIds();
   websocket = new CoinbasePro.WebsocketClient(
-    fullCoins,
+    productIds,
     "wss://ws-feed.pro.coinbase.com",
     {
       key: '22b23cc248c11ed768085bd56d848ce8',
@@ -81,7 +82,7 @@ async function launchChrome() {
    // const cookies = JSON.parse(cookiesString);
     //await page.setCookie(...cookies);
     await page.goto(url);
-    selectInitialChart();
+    //selectInitialChart();
 }
 
 // Create a client with our options
@@ -179,7 +180,7 @@ async function onMessageHandler (target, context, msg, self) {
     if (arr.length == 2) {
       coin = arr[1].toUpperCase();
     }
-    say(`${user} ${getOrderHistory(user, coin)}`)
+    say(`@${user} ${getOrderHistory(user, coin)}`)
   }
 
   else if (cmd == 'pts' || cmd == 'points' || cmd == 'bal' || cmd == 'balance') {
@@ -315,6 +316,13 @@ async function onMessageHandler (target, context, msg, self) {
     listMovers(group);
   }
 
+  else if (cmd == 'stats') {
+    if (arr.length > 1) {
+      coin = arr[1].toUpperCase();
+      getHistoricRates(coin);
+    }
+  }
+
   else {
     console.log(`* Unknown command ${cmd}`);
   }
@@ -325,14 +333,25 @@ async function onMessageHandler (target, context, msg, self) {
 //              FUNCTIONS
 // ====================================
 
+function getHistoricRates(coin) {
+  const productId = getProductId(coin);
+  return new Promise(function (resolve, reject) {
+    const callback = (error, response, data) => {
+      if (error) {
+        resolve(-1)
+      } else {
+        resolve(data)
+      }
+    }
+    publicClient.getProductHistoricRates(productId, callback);
+  });
+}
+
 function updatePrice(data) {
   const product_id = data.product_id;
   const currentTime = new Date().getTime() / 1000;
 
-  var priceDataString = JSON.stringify({
-    price: data.price,
-    time: currentTime
-  });
+  var priceDataString = JSON.stringify(new PriceData(data.price, currentTime));
 
   var priceDataMap =localStore.getItem(product_id);
   if (priceDataMap == null) {
@@ -734,6 +753,11 @@ function Order(type, coin, amount, price) {
   this.price = price
 }
 
+function PriceData(price, time) {
+  this.price = price
+  this.time = time
+}
+
 async function getUsers() {
   var data = await makeRequest("GET", 'https://tmi.twitch.tv/group/user/traderbay/chatters');
   var jsonResponse = JSON.parse(data);
@@ -856,12 +880,12 @@ async function getCoins() {
   });
 }
 
-async function getFullCoinsArray() {
-  var coins = Array.from(await getCoins());
-  for (var i = 0; i < coins.length; i++) {
-    coins[i] = coins[i] += '-USD';
+async function getProductIds() {
+  var ids = Array.from(await getCoins());
+  for (var i = 0; i < ids.length; i++) {
+    ids[i] = getProductId(ids[i]);
   }
-  return coins;
+  return ids;
 }
 
 async function validCoin(coin) {
@@ -909,7 +933,7 @@ async function getCoinPrice(coin, muteError) {
         resolve(data.price)
       }
     }
-    var symbol = coin + '-USD';
+    var productId = getProductId(coin);
     publicClient.getProductTicker(symbol, callback)
   });
 }
@@ -995,9 +1019,9 @@ async function selectInitialChart() {
   await page.waitForSelector(buttonSelector)
   await page.click(buttonSelector)
   setTimeout(async function(){
-    await sleep(100);
+    await sleep(200);
     await page.keyboard.press('ArrowDown');
-    await sleep(100);
+    await sleep(200);
     await page.keyboard.press('\n');
   }, 200);
 }
