@@ -7,6 +7,44 @@ const fs = require('fs').promises;
 const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker')
 const kmeans = require('./1d_kmeans.js');
 
+
+class TokenBucketRateLimiter {
+  constructor (maxRequests, maxRequestWindowMS) {
+    this.maxRequests = maxRequests
+    this.maxRequestWindowMS = maxRequestWindowMS
+    this.reset()
+  }
+
+  reset () {
+    this.count = 0
+    this.resetTimeout = null
+  }
+
+  scheduleReset () {
+    // Only the first token in the set triggers the resetTimeout
+    if (!this.resetTimeout) {
+      this.resetTimeout = setTimeout(() => (
+        this.reset()
+      ), this.maxRequestWindowMS)
+    }
+  }
+
+  async acquireToken (fn) {
+    this.scheduleReset()
+
+    if (this.count >= this.maxRequests) {
+      await sleep(this.maxRequestWindowMS)
+      return this.acquireToken(fn)
+    }
+
+    this.count += 1
+    var result = await fn()
+    return result
+  }
+}
+const retryAfter = 1000;
+const rateLimiter = new TokenBucketRateLimiter(6, retryAfter);
+
 const publicClient = new CoinbasePro.PublicClient();
 var websocket;
 var productIds;
@@ -44,6 +82,8 @@ const admins = ['traderbaybot', 'traderbay']
 
 const currency = 'pts';
 const priceHistoryItem = 'price_history';
+const maxPriceHistoryAge = 3600;
+const priceHistoryTimeInterval = 60;
 const priceDataTimes = [0, 30, 60, 120, 180, 240, 300];
 const newUserBonus = 10000;
 const tax = 100;
@@ -52,6 +92,8 @@ var checkingPrices = false;
 var currentCoin = null;
 
 var topMovers = []
+
+var coinSet;
 
 // Define configuration options for Twitch Bot
 const opts = {
@@ -82,7 +124,7 @@ async function launchChrome() {
    // const cookies = JSON.parse(cookiesString);
     //await page.setCookie(...cookies);
     await page.goto(url);
-    //selectInitialChart();
+    selectInitialChart();
 }
 
 // Create a client with our options
@@ -108,7 +150,8 @@ async function onConnectedHandler (addr, port) {
   //rewardAll(100)
   //rewardAll(100)
   //setInterval(function(){rewardAll(100)}, 10000)
-  setInterval(function(){listMovers()}, 120000)
+  initializePriceHistory();
+  setInterval(function(){listMovers(900, null)}, 60000)
 }
 
 // Called every time a message comes in
@@ -146,7 +189,7 @@ async function onMessageHandler (target, context, msg, self) {
     say(`!pts, !coins, !show <coin>, !price <coin>, !buy <coin> <value>, !sell <coin> <value>, !wallet, !history, !net, !give <user> <value>, !prices, !movers`);
   }
 
-  if (cmd == 'buy')  {
+  if (cmd == 'buy' || cmd == 'b')  {
     let cv = assignCoinValuePair(arr[1], arr[2])
 
     if (!valid(cv.value)) {
@@ -156,7 +199,7 @@ async function onMessageHandler (target, context, msg, self) {
     buy(user, cv.coin, cv.value)
   }
 
-  else if (cmd == 'sell') {
+  else if (cmd == 'sell' || cmd == 's') {
     let cv = assignCoinValuePair(arr[1], arr[2])
 
     if (!valid(cv.value)) {
@@ -227,7 +270,7 @@ async function onMessageHandler (target, context, msg, self) {
       return;
     }
     var coin = arr[1].toUpperCase();
-    var price = await getPrice(coin).catch((e) => {return -1})
+    var price = await getPrice(coin, null).catch((e) => {return -1})
 
     if (price != -1)
       say(`Price of ${coin}: ${price} ${currency}`)
@@ -295,7 +338,7 @@ async function onMessageHandler (target, context, msg, self) {
     coin = arr[1].toUpperCase();
 
     if (coin == 'ALL') {
-      await showCoins(Array.from(await getCoins()).sort());
+      //await showCoins(Array.from(await getCoins()).sort());
     } else {
       if (await validCoin(coin)) {
         showCoin(coin);
@@ -309,11 +352,22 @@ async function onMessageHandler (target, context, msg, self) {
   }
 
   else if (cmd == 'movers' || cmd == 'moves' || cmd == 'mvs' || cmd == 'check') {
+    var interval = null;
     var group = null;
     if (arr.length > 1) {
-      group = arr[1].toUpperCase();
+      interval = arr[1];
+      if (isNaN(interval)) {
+        say(`@${user} invalid interval: '${interval}'`);
+        return
+      } else if (interval > maxPriceHistoryAge || interval < 0) {
+        say(`@${user} interval ${interval} out of range {0, 3600}`);
+        return
+      }
     }
-    listMovers(group);
+    if (arr.length > 2) {
+      group = arr[2].toUpperCase();
+    }
+    listMovers(interval, group);
   }
 
   else if (cmd == 'stats') {
@@ -333,56 +387,183 @@ async function onMessageHandler (target, context, msg, self) {
 //              FUNCTIONS
 // ====================================
 
-function getHistoricRates(coin) {
+async function initializePriceHistory() {
+  var coins = await getCoins();
+
+  var end = new Date();
+  var start = new Date();
+  start.setSeconds(end.getSeconds() - (maxPriceHistoryAge + priceHistoryTimeInterval));
+
+  for (coin of coins) {
+    getHistoricRates(coin, start, end, priceHistoryTimeInterval).then(historicData => {
+      //Update poduct price history with historic rates
+      updatePriceHistory(historicData, end.getTime() / 1000);
+    });
+  }
+}
+
+async function getHistoricRates(coin, start, end, interval) {
   const productId = getProductId(coin);
   return new Promise(function (resolve, reject) {
     const callback = (error, response, data) => {
       if (error) {
         resolve(-1)
       } else {
-        resolve(data)
+        resolve(new HistoricData(productId, data))
       }
     }
-    publicClient.getProductHistoricRates(productId, callback);
+
+    if (start && end && interval) {
+      rateLimitedRequest(() => {
+        publicClient.getProductHistoricRates(
+          productId,
+          { start: start,
+            end: end,
+            granularity: interval },
+          callback)});
+    } else {
+      rateLimitedRequest(() => {
+        publicClient.getProductHistoricRates(
+          productId,
+          callback)});
+    }
   });
 }
 
-function updatePrice(data) {
-  const product_id = data.product_id;
-  const currentTime = new Date().getTime() / 1000;
+async function updatePriceHistory(historicData, time) {
+  var productId = historicData.product;
+  var historicRates = historicData.data;
 
-  var priceDataString = JSON.stringify(new PriceData(data.price, currentTime));
-
-  var priceDataMap =localStore.getItem(product_id);
-  if (priceDataMap == null) {
-    priceDataMap = {}
+  if (historicRates == -1) {
+    print('HistoricRates resolved with -1')
   } else {
-    priceDataMap =  JSON.parse(priceDataMap);
-  }
-  for (var priceDataTime of priceDataTimes) {
-    var key = priceDataTime.toString();
-    var update = false;
-    var priceData = priceDataMap[key];
-    if (priceData != null) {
-      priceData = JSON.parse(priceData);
-      var lastUpdateTime = priceData.time;
-      var timeDiff = currentTime - lastUpdateTime;
-      if (timeDiff > priceDataTime) {
-        update = true;
+    var priceDataMap = getPriceDataMap(productId);
+    var key = 0;
+    //[time, low, high, open, close, volume]
+    for (rate of historicRates) {
+      var rateTime = rate[0];
+      var price = rate[3];
+      key = Math.floor((time - rateTime) / priceHistoryTimeInterval) * priceHistoryTimeInterval;
+      //Don't update latest price
+      if (key != 0) {
+        var priceData = readPriceDataMap(key);
+        if (priceData == null) {
+          priceData = new PriceData(-1, -1);
+        }
+        priceData.time = rateTime;
+        priceData.price = price;
+        updatePriceDataMap(priceDataMap, key, priceData);
       }
-    } else {
-      update = true;
     }
-
-    if(update) {
-      priceDataMap[key] = priceDataString;
-    }
-
+    storePriceDataMap(productId, priceDataMap);
   }
-  localStore.setItem(product_id, JSON.stringify(priceDataMap));
 }
 
-async function listMovers(group) {
+function readPriceDataMap(priceDataMap, key) {
+  var priceData = null;
+  try {
+    priceData = JSON.parse(priceDataMap[key]);
+  } catch {}
+
+  return priceData;
+}
+
+function updatePriceDataMap(priceDataMap, key, priceData) {
+  priceDataMap[key.toString()] = JSON.stringify(priceData);
+}
+
+//Shift all existing times over (need to handle holes)
+//If current shifting price needs to move x spaces, all future exisiting prices will need to shift at least x (could be more if collection stopped multiple times)
+//Second pass (async), fill all holes with price history data from API (or just fetch the price history data from the API when needed if not in stored data, then always store this fetched data)
+//Should preemptively store priceData (trickle in) to avoid flood of requests for analysis
+
+async function shiftStoredPrices(productId, priceDataMap, firstPriceData, currentTime) {
+  // TODO: Fill all holes with data fetched from product history API
+  // OR wait to fetch until needed, then store and shift accordingly in future
+  var shiftedPriceDataMap = {};
+  var shiftingPriceData = firstPriceData;
+
+  getKey = 0;
+  putKey = priceHistoryTimeInterval;
+
+  while (getKey <= maxPriceHistoryAge) {
+    if (getKey != 0) {
+      shiftingPriceData = readPriceDataMap(priceDataMap, getKey);
+    }
+    if (shiftingPriceData) {
+      if (currentTime - shiftingPriceData.time > getKey) {
+        var placed = false;
+        while (putKey <= maxPriceHistoryAge && !placed) {
+          
+          if (shiftingPriceData != null) {
+            if (currentTime - shiftingPriceData.time <= putKey) {
+              updatePriceDataMap(shiftedPriceDataMap, putKey, shiftingPriceData);
+              placed = true;
+            }
+          }
+          putKey += priceHistoryTimeInterval;
+        }
+
+        if (placed == false) {
+          updatePriceDataMap(shiftedPriceDataMap, getKey, null);
+        }
+      } else {
+        updatePriceDataMap(shiftedPriceDataMap, getKey, shiftingPriceData);
+      }
+    }
+
+    getKey += priceHistoryTimeInterval;
+  }
+
+  // Update shiftedPriceDataMap[0] to latest from store (may have been updated since shifting began)
+  var latestPriceDataMap = getPriceDataMap(productId);
+  var latestPriceData = readPriceDataMap(latestPriceDataMap, 0);
+
+  if (latestPriceData != null) {
+    updatePriceDataMap(shiftedPriceDataMap, 0, latestPriceData)
+  }
+  
+  storePriceDataMap(productId, shiftedPriceDataMap);
+}
+
+function getPriceDataMap(productId) {
+  priceDataMap = localStore.getItem(productId);
+
+  if (priceDataMap != null) {
+    priceDataMap =  JSON.parse(priceDataMap);
+  } else {
+    priceDataMap = {};
+  }
+ 
+  return priceDataMap;
+}
+
+function storePriceDataMap(productId, priceDataMap) {
+  localStore.setItem(productId, JSON.stringify(priceDataMap));
+}
+
+function updatePrice(data) {
+  const productId = data.product_id;
+  if (productId) {
+    const currentTime = new Date().getTime() / 1000;
+
+    var newPriceData = new PriceData(data.price, currentTime);
+
+    var priceDataMap = getPriceDataMap(productId);
+    var latestPriceData = readPriceDataMap(priceDataMap, 0);
+
+    updatePriceDataMap(priceDataMap, 0, newPriceData);
+    storePriceDataMap(productId, priceDataMap);
+
+    if (latestPriceData != null) {
+      if (currentTime - latestPriceData.time >= priceHistoryTimeInterval) {
+        shiftStoredPrices(productId, priceDataMap, latestPriceData, currentTime);
+      }
+    }
+  }
+}
+
+async function listMovers(interval, group) {
   if (checkingPrices) {
     say(`Price check already in progress.`);
     return
@@ -390,12 +571,17 @@ async function listMovers(group) {
   try {
     checkingPrices = true;
     var status = '';
-    var processChanges = false;
+    var processChanges = true; //false;
 
     var startTime = new Date().getTime() / 1000;
-
     var timeDiff = 0;
+    if (interval) {
+      interval = Math.floor(interval / priceHistoryTimeInterval) * priceHistoryTimeInterval;
+      timeDiff = interval;
+    }
 
+    // If calling without set interval, use previously saved 'checkpoint' and update.
+    /*
     priceHistory = getPriceHistory();
     if (priceHistory == null) {
       status += ' No previous price data recorded.'
@@ -410,6 +596,7 @@ async function listMovers(group) {
         processChanges = true;
       }
     }
+    */
 
     if (status != '') {
       say(status);
@@ -418,11 +605,26 @@ async function listMovers(group) {
     var groupTitle = '';
 
     var coins = await getCoins();
-    priceMap = await getPrices(coins).catch((e) => {return -1})
+    var historicPriceMap;
+    if (interval) {
+      historicPriceMap = await getPrices(coins, interval).catch((e) => {return -1})
+    } else {
+      historicPriceMap = getPriceHistory();
+      if (historicPriceMap == null) {
+        historicPriceMap = await getPrices(coins).catch((e) => {return -1})
+      } else {
+        try {
+          var lastChecked = historicPriceMap['time_checked']
+          timeDiff = startTime - lastChecked;
+        } catch {}
+      }
+    }
+
+    var priceMap = await getPrices(coins).catch((e) => {return -1})
 
     var endTime = new Date().getTime() / 1000;
     var completeTime = endTime - startTime;
-    priceMap['time_checked'] = endTime;
+
     status = '';
 
     if (processChanges) {
@@ -430,7 +632,7 @@ async function listMovers(group) {
 
       // Get map of percent changes
       for (coin of coins) {
-        var lastPrice = priceHistory[coin];
+        var lastPrice = historicPriceMap[coin];
         var currentPrice = priceMap[coin];
 
         if (!isNaN(lastPrice) && !isNaN(currentPrice)) {
@@ -438,7 +640,7 @@ async function listMovers(group) {
           var percentChange = priceChange / lastPrice;
           changeMap[coin] = percentChange;
         } else {
-          print('value is nan');
+          //print('value is nan');
         }
       }
 
@@ -489,7 +691,11 @@ async function listMovers(group) {
     //status += `Price check completed in ${roundTo(2, completeTime)} seconds.`;
     say(status);
 
-    setPriceHistory(priceMap);
+    if (!interval) {
+      historicPriceMap['time_checked'] = endTime;
+      setPriceHistory(historicPriceMap);
+    }
+
   } catch {}
   finally {
     checkingPrices = false;
@@ -503,7 +709,7 @@ function helpMessage() {
 async function buy(user, coin, value) {
   var points = getBalance(user)
 
-  if (value == 'ALL') {
+  if (value == 'ALL' || value == 'A') {
     value = points;
   } else if (isNaN(value)) {
     say(` @${user} Invalid buy command.`)
@@ -515,7 +721,7 @@ async function buy(user, coin, value) {
   }
 
   // Not sure how to return from within catch
-  var price = await getPrice(coin).catch((e) => {return -1});
+  var price = await getPrice(coin, null).catch((e) => {return -1});
   if (price == -1) {
     return
   }
@@ -551,7 +757,7 @@ async function sell(user, coin, value) {
     return
   }
 
-  var price = await getPrice(coin).catch((e) => {return -1});
+  var price = await getPrice(coin, null).catch((e) => {return -1});
   if (price == -1) {
     return
   }
@@ -562,7 +768,7 @@ async function sell(user, coin, value) {
   var sellAmount = 0;
   var remAmount = 0;
 
-  if (value == 'ALL') {
+  if (value == 'ALL' || value == 'A') {
     sellValue = heldValue;
     sellAmount = heldAmount;
   }
@@ -598,7 +804,7 @@ async function holdingValue(user) {
   // If a group of coins need prices fetched, how to async this and collect at end?
   for(const coin of coins) {
     var holding = trader.holdingMap[coin]
-    var price = await getPrice(coin).catch((e) => {return -1})
+    var price = await getPrice(coin, null).catch((e) => {return -1})
     var value = price * holding['amount']
     totalValue += value;
   }
@@ -623,7 +829,7 @@ async function holdingSummary(user) {
 
   for (const coin of coins) {
     var holding = trader.holdingMap[coin]
-    var price = await getPrice(coin).catch((e) => {return -1})
+    var price = await getPrice(coin, null).catch((e) => {return -1})
     var value = price * holding['amount']
     value = roundTo(2, value);
     holdingArray.push(`${coin} (~${value} ${currency})`)
@@ -652,7 +858,7 @@ async function wallet(user, coin) {
   }
 
   var amount = holding['amount'];
-  var price = await getPrice(coin).catch((e) => {return -1})
+  var price = await getPrice(coin, null).catch((e) => {return -1})
   var value = price * amount;
   
   say(`${user} holds ${amount} ${coin} worth ${roundTo(2, value)} ${currency}`)
@@ -758,6 +964,11 @@ function PriceData(price, time) {
   this.time = time
 }
 
+function HistoricData(product, data) {
+  this.product = product;
+  this.data = data;
+}
+
 async function getUsers() {
   var data = await makeRequest("GET", 'https://tmi.twitch.tv/group/user/traderbay/chatters');
   var jsonResponse = JSON.parse(data);
@@ -861,22 +1072,27 @@ function getPriceHistory() {
 
 async function getCoins() {
   return new Promise(function (resolve, reject) {
-    const callback = (error, response, data) => {
-      if (error) {
-        print(`coinbase callback error: ${error}`)
-        resolve(-1)
-      } else {
-        var coinSet = new Set();
-        for (i in data) {
-          var product = data[i].id
-          if (product.endsWith('-USD')) {
-            coinSet.add(product.split('-')[0])
+    if (coinSet == null) {
+      const callback = (error, response, data) => {
+        if (error) {
+          print(`coinbase callback error: ${error}`)
+          resolve(-1)
+        } else {
+          coinSet = new Set();
+          for (i in data) {
+            var product = data[i].id
+            if (product.endsWith('-USD')) {
+              coinSet.add(product.split('-')[0])
+            }
           }
+          resolve(coinSet)
         }
-        resolve(coinSet)
       }
+      rateLimitedRequest(() => {publicClient.getProducts(callback)});
     }
-    publicClient.getProducts(callback);
+    else {
+      resolve(coinSet);
+    }
   });
 }
 
@@ -898,15 +1114,20 @@ async function validCoin(coin) {
   }
 }
 
-async function getPrice(coin) {
+async function getPrice(coin, age) {
+  var key = 0;
+  if (age) {
+    key = age;
+  }
+  key = key.toString();
+
   var poll = false;
   var price;
-  const product_id = getProductId(coin);
-  var priceDataMap = localStore.getItem(product_id);
+  const productId = getProductId(coin);
+  var priceDataMap = getPriceDataMap(productId);
   if (priceDataMap != null) {
-    priceDataMap = JSON.parse(priceDataMap);
-    if ('0' in priceDataMap) {
-      var priceData = JSON.parse(priceDataMap['0']);
+    if (key in priceDataMap) {
+      var priceData = JSON.parse(priceDataMap[key]);
       price = priceData.price;
     }
   } else {
@@ -914,7 +1135,9 @@ async function getPrice(coin) {
   }
 
   if (poll) {
-    return await getCoinPrice(coin).catch((e) => {return -1});
+    var end = new Date();
+    var start = new Date(end - age);
+    return await getCoinPrice(coin, start, end, priceHistoryTimeInterval).catch((e) => {return -1});
   }
 
   return price;
@@ -924,7 +1147,7 @@ async function getCoinPrice(coin, muteError) {
   return new Promise(function (resolve, reject) {
     const callback = (error, response, data) => {
       if (error) {
-        //print(error)
+        print(error)
         if (muteError == null) {
           say(`Unable to get price data for '${coin}'`)
         }
@@ -934,12 +1157,12 @@ async function getCoinPrice(coin, muteError) {
       }
     }
     var productId = getProductId(coin);
-    publicClient.getProductTicker(symbol, callback)
+    rateLimitedRequest(() => {publicClient.getProductTicker(symbol, callback)});
   });
 }
 
 function getHoldingValue(coin, amount) {
-  var price = getPrice(coin).catch((e) => {return -1})
+  var price = getPrice(coin, null).catch((e) => {return -1})
   if (price == -1) {
     return
   }
@@ -967,11 +1190,11 @@ function getOrderHistory(user, coin) {
   return historyString(history, coin);
 }
 
-async function getPrices(coins) {
+async function getPrices(coins, age) {
   var priceMap = {}
 
   for (coin of coins) {
-    priceMap[coin] = getPrice(coin, true).catch((e) => {return -1})
+    priceMap[coin] = getPrice(coin, age).catch((e) => {return -1})
   }
 
   var promiseArray = Object.values(priceMap);
@@ -1019,9 +1242,9 @@ async function selectInitialChart() {
   await page.waitForSelector(buttonSelector)
   await page.click(buttonSelector)
   setTimeout(async function(){
-    await sleep(200);
+    await sleep(400);
     await page.keyboard.press('ArrowDown');
-    await sleep(200);
+    await sleep(400);
     await page.keyboard.press('\n');
   }, 200);
 }
@@ -1029,6 +1252,24 @@ async function selectInitialChart() {
 // ====================================
 //              UTIL
 // ====================================
+
+//TODO: Fix
+async function fetchAndRetryIfNecessary (callAPIFn) {
+  const response = await callAPIFn()
+  if (response) {
+    if (response.status === 429 || response == -1) {
+      await sleep(retryAfter)
+      return fetchAndRetryIfNecessary(callAPIFn)
+    }
+    return response
+  }
+}
+
+function rateLimitedRequest(request) {
+  fetchAndRetryIfNecessary(() => (
+    rateLimiter.acquireToken(() => request())
+  ));
+}
 
 function makeRequest(method, url) {
   return new Promise(function (resolve, reject) {
@@ -1108,8 +1349,8 @@ function assignCoinValuePair(item1, item2) {
     item1 = item1.toUpperCase();
     item2 = item2.toUpperCase();
 
-    if (item1 == 'ALL' || item2 == 'ALL') {
-      if (item1 == 'ALL') {
+    if (item1 == 'ALL' || item2 == 'ALL' || item1 == 'A' || item2 == 'A') {
+      if (item1 == 'ALL' || item1 == 'A') {
         value = item1;
         coin = item2;
       } else {
