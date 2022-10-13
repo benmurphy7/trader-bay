@@ -1092,7 +1092,7 @@ async function getCoins() {
             var product = data[i].id
             if (product.endsWith('-USD')) {
               // Why is this being returned by getProducts if it is not a product...?
-              if (product != "XRP-USD") {
+              if (product != "XRP-USD" && product != "WLUNA-USD" && product != "UST-USD") {
                 coinSet.add(product.split('-')[0])
               }
             }
