@@ -341,8 +341,8 @@ async function onMessageHandler (target, context, msg, self) {
 
     coin = arr[1].toUpperCase();
 
-    if (coin == 'ALL') {
-      //await showCoins(Array.from(await getCoins()).sort());
+    if (coin == 'ALL' && isAdmin(user)) {
+      await showCoins(Array.from(await getCoins()).sort());
     } else {
       if (await validCoin(coin)) {
         showCoin(coin);
