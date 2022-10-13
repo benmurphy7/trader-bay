@@ -78,7 +78,7 @@ const localStore = new localStorage.LocalStorage(storePath);
 //localStore.clear()
 //print(localStore)
 
-const admins = ['traderbaybot', 'traderbay']
+const admins = ['traderbaybot', 'traderbay', 'hostilebot']
 
 const currency = 'pts';
 const priceHistoryItem = 'price_history';
@@ -151,7 +151,7 @@ async function onConnectedHandler (addr, port) {
   //rewardAll(100)
   //setInterval(function(){rewardAll(100)}, 10000)
   initializePriceHistory();
-  setInterval(function(){listMovers(900, null)}, 60000)
+  setInterval(function(){listMovers(60, null)}, 60000)
 }
 
 // Called every time a message comes in
@@ -186,7 +186,7 @@ async function onMessageHandler (target, context, msg, self) {
 // ====================================
 
   if (cmd == 'help' || cmd == 'commands' || cmd == "cmds") {
-    say(`!pts, !coins, !show <coin>, !price <coin>, !buy <coin> <value>, !sell <coin> <value>, !wallet, !history, !net, !give <user> <value>, !prices, !movers`);
+    say(`!pts, !coins, !show <coin>, !price <coin>, !buy <coin> <value>, !sell <coin> <value>, !wallet, !history, !net, !give <user> <value>, !prices, !movers <seconds> (Command symbols: !, $, &)`);
   }
 
   if (cmd == 'buy' || cmd == 'b')  {
@@ -196,7 +196,9 @@ async function onMessageHandler (target, context, msg, self) {
       return
     }
 
-    buy(user, cv.coin, cv.value)
+    if (await validCoin(cv.coin)) {
+      buy(user, cv.coin, cv.value)
+    }
   }
 
   else if (cmd == 'sell' || cmd == 's') {
@@ -206,7 +208,9 @@ async function onMessageHandler (target, context, msg, self) {
       return
     }
 
-    sell(user, cv.coin, cv.value)
+    if (await validCoin(cv.coin)) {
+      sell(user, cv.coin, cv.value)
+    }
   }
 
   else if (cmd == 'held' || cmd == 'hodl' || cmd == 'holding' || cmd == 'hold' || cmd == 'holds' || cmd == 'hld' || cmd == 'wallet' || cmd == 'wlt' || cmd == 'wal') {
@@ -251,7 +255,7 @@ async function onMessageHandler (target, context, msg, self) {
     // Admins can give any amount
     if(isAdmin(user)) {
       if (grant(taker, amount)) {
-        say(`${user} gave ${taker} ${amount}`);
+        say(`${user} gave ${taker} ${amount} ${currency}`);
       } else {
         say(`@${user} Unable to find '${taker}'`);
       }
@@ -317,7 +321,7 @@ async function onMessageHandler (target, context, msg, self) {
     }
 
     if (setBalance(taker, balance)) {
-      say(`Set balance of ${taker} to ${balance}`)
+      say(`Set balance of ${taker} to ${balance} ${currency}`)
     } else {
       say(`Unable to set balance of '${taker}'`);
     }
@@ -330,7 +334,7 @@ async function onMessageHandler (target, context, msg, self) {
     }
   }
 
-  else if (cmd == 'show' || cmd == 'shw' || cmd == 'chart') {
+  else if (cmd == 'show' || cmd == 'shw' || cmd == 'sh' || cmd == 'chart') {
     if (arr.length < 2) {
       return
     }
@@ -360,7 +364,7 @@ async function onMessageHandler (target, context, msg, self) {
         say(`@${user} invalid interval: '${interval}'`);
         return
       } else if (interval > maxPriceHistoryAge || interval < 0) {
-        say(`@${user} interval ${interval} out of range {0, 3600}`);
+        say(`@${user} interval ${interval} out of range (0, 3600)`);
         return
       }
     }
@@ -375,6 +379,11 @@ async function onMessageHandler (target, context, msg, self) {
       coin = arr[1].toUpperCase();
       getHistoricRates(coin);
     }
+  }
+
+  else if (cmd == 'time') {
+    var time = new Date();
+    say(`Current time: ${time} (${time.getTime() / 1000} secs)`)
   }
 
   else {
@@ -897,9 +906,9 @@ function give(giver, amount, taker) {
     return
   }
 
-  if (taker.toLowerCase() == user.toLowerCase()) {
-    grant(user, tax * -1);
-    say(`${user} tried to give themself ${amount} and got taxed for unrealized gains (-${tax} ${currency})`)
+  if (taker.toLowerCase() == giver.toLowerCase()) {
+    grant(giver, tax * -1);
+    say(`${giver} tried to give themself ${amount} and got taxed for unrealized gains (-${tax} ${currency})`)
     return
   }
 
@@ -908,7 +917,7 @@ function give(giver, amount, taker) {
   takingTrader.points += parseFloat(amount);
   setTrader(takingTrader);
 
-  say(`${getDisplayName(giver)} gave ${getDisplayName(taker)} ${amount}`);
+  say(`${getDisplayName(giver)} gave ${getDisplayName(taker)} ${amount} ${currency}`);
 }
 
 function topoff(user) {
@@ -1082,7 +1091,10 @@ async function getCoins() {
           for (i in data) {
             var product = data[i].id
             if (product.endsWith('-USD')) {
-              coinSet.add(product.split('-')[0])
+              // Why is this being returned by getProducts if it is not a product...?
+              if (product != "XRP-USD") {
+                coinSet.add(product.split('-')[0])
+              }
             }
           }
           resolve(coinSet)
@@ -1235,18 +1247,18 @@ async function showCoin(coin) {
       }, 200);
 }
 
+ // Broken
 async function selectInitialChart() {
-  
-  const buttonSelector = 
-    '#tv-main-page-promo > div > div.contentContainer-n3cPtofU > div.content-n3cPtofU > div > button > span';
-  await page.waitForSelector(buttonSelector)
-  await page.click(buttonSelector)
-  setTimeout(async function(){
-    await sleep(400);
-    await page.keyboard.press('ArrowDown');
-    await sleep(400);
-    await page.keyboard.press('\n');
-  }, 200);
+  // const buttonSelector = 
+  //   '#tv-main-page-promo > div > div.contentContainer-n3cPtofU > div.content-n3cPtofU > div > button > span';
+  // await page.waitForSelector(buttonSelector)
+  // await page.click(buttonSelector)
+  // setTimeout(async function(){
+  //   await sleep(400);
+  //   await page.keyboard.press('ArrowDown');
+  //   await sleep(400);
+  //   await page.keyboard.press('\n');
+  // }, 200);
 }
 
 // ====================================
