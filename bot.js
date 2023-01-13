@@ -57,9 +57,9 @@ async function setupWebSocket() {
     productIds,
     "wss://ws-feed.pro.coinbase.com",
     {
-      key: '22b23cc248c11ed768085bd56d848ce8',
-      secret: 'z3oxxGnsXC69ymx7oP3zZzT0Cu5eSMHEJYl+UY5xgQK0suxzCTATqo0cEeGqK1pCZA/iH2MHpfIjIse0buK08A==',
-      passphrase: 'eltoumi',
+      key: '081c9708ec2297e050733c1e57d8da11',
+      secret: 'v3ywKk0Ltkg3SuJxu8P2Wn8s75GX/Oq8wRmeB5Y+4USQtB2GRVR4i4VBvYNbmAaGZEmw/LW8SfzFtf1SKUBCRA==',
+      passphrase: 'traderbay',
     },
     {
       channels: ['ticker']
